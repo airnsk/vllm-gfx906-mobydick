@@ -357,11 +357,16 @@ def _get_backend_priorities(
 
     if use_mla:
         if rocm_aiter_ops.is_mla_enabled():
-            return [
+            backends = [
                 AttentionBackendEnum.ROCM_AITER_MLA,
                 AttentionBackendEnum.TRITON_MLA,
                 AttentionBackendEnum.ROCM_AITER_TRITON_MLA,
             ]
+            # on gfx906, triton mla is the only one that has been well tested so it has the highest priority
+            if on_gfx906():
+                backends.remove(AttentionBackendEnum.TRITON_MLA)
+                backends.insert(0, AttentionBackendEnum.TRITON_MLA)
+            return backends
         else:
             return [
                 AttentionBackendEnum.TRITON_MLA,
@@ -389,6 +394,12 @@ def _get_backend_priorities(
 
     # Default: Triton Unified Attention
     backends.append(AttentionBackendEnum.TRITON_ATTN)
+
+    # on gfx906, triton attn is the fastest (e.g. 2x faster than rocm attn for Minimax M2.5 AWQ in TG) so it has the highest priority
+    if on_gfx906():
+        backends.remove(AttentionBackendEnum.TRITON_ATTN)
+        backends.insert(0, AttentionBackendEnum.TRITON_ATTN)
+
     return backends
 
 
