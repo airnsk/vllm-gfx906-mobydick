@@ -1,5 +1,24 @@
 ## Mini Install Guide for GFX906
 
+### 🐳 Using Pre-built Docker Image (Recommended)
+
+If you have Docker and the AMD ROCm drivers/kernel modules installed on your host system, you can totally bypass the complex manual source-build installation by using our pre-built Docker image.
+
+```bash
+# Pull the latest image (or specify a tag instead of latest, e.g. v0.19.1rc0.x)
+docker pull aiinfos/vllm-gfx906-mobydick:latest
+
+# Run the container interactively (Make sure to pass ROCm devices into the container and have your models in host ~/llm/models)
+docker run -it --name vllm-gfx906-mobydick -v ~/llm/models:/models --network host --device=/dev/kfd --device=/dev/dri --group-add video --group-add $(getent group render | cut -d: -f3) --ipc=host aiinfos/vllm-gfx906-mobydick:latest
+```
+
+Once inside the container, you are all set! You can immediately start serving models (see the Quickstart example below).
+
+---
+
+### 🛠️ Manual Build from Source
+
+If you prefer to build and install from source on your bare metal instead, follow the steps below:
 
 ### ROCm 6.3.4 & amdgpu drivers
 
