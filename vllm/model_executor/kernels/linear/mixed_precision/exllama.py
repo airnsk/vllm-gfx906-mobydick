@@ -48,8 +48,8 @@ class ExllamaLinearKernel(MPLinearKernel):
                 "pack the zero points",
             )
 
-        if c.act_type != torch.float16:
-            return False, "Exllama only supports float16 activations"
+        if c.act_type not in (torch.float16, torch.float32):
+            return False, "Exllama only supports float16 or float32 activations"
 
         if c.weight_type not in cls.SUPPORTED_QUANT_TYPES:
             return (
@@ -133,7 +133,8 @@ class ExllamaLinearKernel(MPLinearKernel):
             assert isinstance(x, BasevLLMParameter)
             permute_param_layout_(x, input_dim=0, output_dim=1)
             x.data = x.data.contiguous()
-            return x.to(dtype=c.act_type)
+            # Under the hood, the exllama kernel only supports float16
+            return x.to(dtype=torch.float16 if c.act_type == torch.float32 else c.act_type)
 
         # Repack weights and scales for Machete
         self._transform_param(layer, self.w_q_name, transform_w_q)
@@ -157,9 +158,16 @@ class ExllamaLinearKernel(MPLinearKernel):
 
         assert w_zp is not None, "Zero points are required by Exllama"
         assert w_g_idx is not None, "Group index is required by Exllama"
+        
+        # The underlying gptq_gemm kernel only supports fp16
+        x_2d_fp16 = x_2d.to(torch.float16) if x_2d.dtype == torch.float32 else x_2d
+
         output = ops.gptq_gemm(
-            x_2d, w_q, w_zp, w_s, w_g_idx, True, use_v2_format, c.weight_type.size_bits
+            x_2d_fp16, w_q, w_zp, w_s, w_g_idx, True, use_v2_format, c.weight_type.size_bits
         )
+
+        if output.dtype != x.dtype:
+            output = output.to(x.dtype)
 
         if bias is not None:
             output.add_(bias)
