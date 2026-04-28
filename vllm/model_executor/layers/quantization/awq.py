@@ -8,6 +8,7 @@ from safetensors.torch import _TYPES as _SAFETENSORS_TO_TORCH_DTYPE
 from transformers import PretrainedConfig
 
 from vllm import _custom_ops as ops
+from vllm import envs
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe.layer import FusedMoE
 from vllm.model_executor.layers.linear import (
@@ -262,44 +263,64 @@ class AWQLinearMethod(LinearMethodBase):
         layer.qzeros = torch.nn.Parameter(layer.qzeros.data, requires_grad=False)
         layer.scales = torch.nn.Parameter(layer.scales.data, requires_grad=False)
 
-        bits = self.quant_config.weight_bits
-        empty = torch.empty(0, device=layer.qzeros.device)
+        if on_gfx906():
+            bits = self.quant_config.weight_bits
+            empty = torch.empty(0, device=layer.qzeros.device)
 
-        # hints: shuffle twice is equal to unshuffle once
-        ops.gptq_shuffle(layer.qzeros, empty, bits)
-        ops.gptq_shuffle(layer.qzeros, empty, bits)
+            # hints: shuffle twice is equal to unshuffle once
+            ops.gptq_shuffle(layer.qzeros, empty, bits)
+            ops.gptq_shuffle(layer.qzeros, empty, bits)
 
-        ops.gptq_shuffle_awq_qweight(layer.qweight, bits)
-        layer.qweight.data = layer.qweight.reshape((layer.qweight.shape[0] // 8,
-                                                    layer.qweight.shape[1] * 8))
-        replace_parameter(layer, "qweight", layer.qweight.data)
+            ops.gptq_shuffle_awq_qweight(layer.qweight, bits)
+            layer.qweight.data = layer.qweight.reshape((layer.qweight.shape[0] // 8,
+                                                        layer.qweight.shape[1] * 8))
+            replace_parameter(layer, "qweight", layer.qweight.data)
 
     def apply(self,
               layer: torch.nn.Module,
               x: torch.Tensor,
               bias: torch.Tensor | None = None) -> torch.Tensor:
-        out_shape = x.shape[:-1] + (layer.qweight.shape[-1], )
+        if on_gfx906():
+            out_shape = x.shape[:-1] + (layer.qweight.shape[-1], )
 
-        # If --dtype float32 force operations to run in FP16 as w4a32 mode not implemented for gptq_gemm kernel
-        # TODO: implement w4a32 mode for gptq_gemm kernel to be consistent (only if necessary, for example: in case of w4a16 precision issues leading to garbage outputs with future models)
-        # NB: it has not been implemented yet as Deepseek v3.2 int4 autoround gptq works with dtype fp32 and with moe_wna16 kernel with true w4a32 mode implemented there
-        # So gptq_gemm has been left in w4a16 mode only for now with the below cast workaround when dtype is fp32 -> that's enough for now.
-        orig_dtype = x.dtype
-        scales = layer.scales
-        if x.dtype == torch.float32:
-            x = x.to(torch.float16)
-            if scales.dtype == torch.float32:
-                scales = scales.to(torch.float16)
+            # If --dtype float32 force operations to run in FP16 as w4a32 mode not implemented for gptq_gemm kernel
+            # TODO: implement w4a32 mode for gptq_gemm kernel to be consistent (only if necessary, for example: in case of w4a16 precision issues leading to garbage outputs with future models)
+            # NB: it has not been implemented yet as Deepseek v3.2 int4 autoround gptq works with dtype fp32 and with moe_wna16 kernel with true w4a32 mode implemented there
+            # So gptq_gemm has been left in w4a16 mode only for now with the below cast workaround when dtype is fp32 -> that's enough for now.
+            orig_dtype = x.dtype
+            scales = layer.scales
+            if x.dtype == torch.float32:
+                x = x.to(torch.float16)
+                if scales.dtype == torch.float32:
+                    scales = scales.to(torch.float16)
 
-        reshaped_x = x.reshape(-1, x.shape[-1])
+            reshaped_x = x.reshape(-1, x.shape[-1])
 
-        output = ops.gptq_gemm(
-            reshaped_x, layer.qweight, layer.qzeros, scales,
-            torch.empty(0, device=layer.qweight.device),
-            True, True, self.quant_config.weight_bits
-        )
-        if output.dtype != orig_dtype:
-            output = output.to(orig_dtype)
+            output = ops.gptq_gemm(
+                reshaped_x, layer.qweight, layer.qzeros, scales,
+                torch.empty(0, device=layer.qweight.device),
+                True, True, self.quant_config.weight_bits
+            )
+            if output.dtype != orig_dtype:
+                output = output.to(orig_dtype)
+        else:
+            qweight = layer.qweight
+            scales = layer.scales
+            qzeros = layer.qzeros
+            pack_factor = self.quant_config.pack_factor
+            out_shape = x.shape[:-1] + (qweight.shape[-1] * pack_factor, )
+            reshaped_x = x.reshape(-1, x.shape[-1])
+
+            # num_tokens >= threshold
+            FP16_MATMUL_HEURISTIC_CONDITION = x.shape[:-1].numel() >= 256
+            # Batch invariant mode requires torch.matmul path
+            # for Triton override
+            if FP16_MATMUL_HEURISTIC_CONDITION or envs.VLLM_BATCH_INVARIANT:
+                out = ops.awq_dequantize(qweight, scales, qzeros, 0, 0, 0)
+                output = torch.matmul(reshaped_x, out)
+            else:
+                output = ops.awq_gemm(reshaped_x, qweight, scales, qzeros, pack_factor)
+
         if bias is not None:
             output.add_(bias)
         return output.reshape(out_shape)
