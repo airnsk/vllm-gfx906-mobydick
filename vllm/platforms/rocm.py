@@ -859,7 +859,7 @@ class RocmPlatform(Platform):
 
     @classmethod
     def supports_fp8(cls) -> bool:
-        return on_gfx9() or on_gfx12x()
+        return on_gfx9() or on_gfx12x() or on_gfx906() # experimental for gfx906 (test OK only done with Qwen3 Coder Next fp8)
 
     @classmethod
     def is_fp8_fnuz(cls) -> bool:
