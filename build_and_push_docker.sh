@@ -111,6 +111,8 @@ echo "Dockerfile has been created."
 
 echo "Building the Docker image: ${IMAGE_NAME}:${IMAGE_TAG}-rocm${ROCM_VERSION}-pytorch${PYTORCH_VERSION} ..."
 # Build the multi-stage image. Buildkit handles parallel stage execution.
+# Uncomment below line if you want to use --no-cache-filter build_vllm to ensure the latest vllm commits are always pulled without rebuilding triton/flash-attn.
+# DOCKER_BUILDKIT=1 docker build --no-cache-filter build_vllm -t ${IMAGE_NAME}:${IMAGE_TAG}-rocm${ROCM_VERSION}-pytorch${PYTORCH_VERSION} -t ${IMAGE_NAME}:latest .
 DOCKER_BUILDKIT=1 docker build -t ${IMAGE_NAME}:${IMAGE_TAG}-rocm${ROCM_VERSION}-pytorch${PYTORCH_VERSION} -t ${IMAGE_NAME}:latest .
 
 echo "We need to authenticate with Docker Hub before pushing."
