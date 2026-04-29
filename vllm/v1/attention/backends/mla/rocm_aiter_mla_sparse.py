@@ -521,30 +521,22 @@ class ROCMAiterMLASparseImpl(SparseMLAAttentionImpl[ROCMAiterMLASparseMetadata])
         attn_metadata: ROCMAiterMLASparseMetadata,
     ) -> torch.Tensor:
         num_tokens = q.shape[0]
-        mla_num_heads = AiterMLAHelper.get_actual_mla_num_heads(self.num_heads)
-        output = torch.empty(
-            [num_tokens, mla_num_heads, self.kv_lora_rank],
-            dtype=q.dtype,
-            device=q.device,
-        )
-        seq_len = (topk_indices != -1).sum(dim=-1)
-        torch.cumsum(seq_len, dim=0, out=attn_metadata.paged_kv_indptr[1:])
-        attn_metadata.paged_kv_indptr_rest.fill_(attn_metadata.paged_kv_indptr[-1])
-        fetch_id_to_ragged_triton(
-            topk_indices,
-            attn_metadata.paged_kv_indptr,
-            attn_metadata.paged_kv_indices,
-            attn_metadata.topk_tokens,
-        )
-        topk_indices = topk_indices.view(num_tokens, 1, -1)
-
         if envs.VLLM_ROCM_MLA_SPARSE_FP16:
             # Force ref Torch (instead of using mla_sparse) as triton is still slower than chunked torch (1.5 vs 8 TFLOPS) and not steady enough (HSA_STATUS_ERROR_OUT_OF_RESOURCES when running with max-num-batched-tokens 8192)
             output = reference_mla_sparse_prefill(
-                q, kv_c_and_k_pe_cache, topk_indices,
-                self.softmax_scale, self.kv_lora_rank,
+                q,
+                kv_c_and_k_pe_cache.view(-1, 1, kv_c_and_k_pe_cache.shape[-1]),
+                topk_indices.view(num_tokens, 1, -1),
+                self.softmax_scale,
+                self.kv_lora_rank,
             )
         else:
+            mla_num_heads = AiterMLAHelper.get_actual_mla_num_heads(self.num_heads)
+            output = torch.empty(
+                [num_tokens, mla_num_heads, self.kv_lora_rank],
+                dtype=q.dtype,
+                device=q.device,
+            )
             seq_len = (topk_indices != -1).sum(dim=-1)
             torch.cumsum(seq_len, dim=0, out=attn_metadata.paged_kv_indptr[1:])
             attn_metadata.paged_kv_indptr_rest.fill_(attn_metadata.paged_kv_indptr[-1])
@@ -553,11 +545,6 @@ class ROCMAiterMLASparseImpl(SparseMLAAttentionImpl[ROCMAiterMLASparseMetadata])
                 attn_metadata.paged_kv_indptr,
                 attn_metadata.paged_kv_indices,
                 attn_metadata.topk_tokens,
-            )
-            output = torch.empty(
-                [num_tokens, self.num_heads, self.kv_lora_rank],
-                dtype=q.dtype,
-                device=q.device,
             )
             rocm_aiter_ops.mla_decode_fwd(
                 q,

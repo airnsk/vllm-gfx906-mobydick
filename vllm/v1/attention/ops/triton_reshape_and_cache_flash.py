@@ -324,7 +324,7 @@ def triton_reshape_and_cache_flash(
     # [num_blocks, block_size, num_heads, head_size]
     value_cache: torch.Tensor,
     slot_mapping: torch.Tensor,  # [num_tokens]
-    kv_cache_dtype: str,  # "auto", "fp8", "half"
+    kv_cache_dtype: str,  # "auto", "fp8", "float16"
     k_scale: torch.Tensor,  # float32
     v_scale: torch.Tensor,  # float32
 ):
@@ -353,12 +353,12 @@ def triton_reshape_and_cache_flash(
     assert (
         kv_cache_dtype == "auto"
         or is_quantized_kv_cache(kv_cache_dtype)
-        or kv_cache_dtype == "half"
+        or kv_cache_dtype == "float16"
     ), f"unsupported kv_cache_dtype (str), got {kv_cache_dtype}."
 
     if is_quantized_kv_cache(kv_cache_dtype):
         kv_cache_torch_dtype = current_platform.fp8_dtype()
-    elif kv_cache_dtype == "half":
+    elif kv_cache_dtype == "float16":
         kv_cache_torch_dtype = torch.float16
     else:
         kv_cache_torch_dtype = key_cache.dtype
@@ -519,7 +519,7 @@ def triton_reshape_and_cache_flash_diffkv(
     # [num_blocks, block_size, num_heads, head_size + head_size_v]
     kv_cache: torch.Tensor,
     slot_mapping: torch.Tensor,  # [num_tokens]
-    kv_cache_dtype: str,  # "auto", "fp8", "half"
+    kv_cache_dtype: str,  # "auto", "fp8", "float16"
     k_scale: torch.Tensor,  # float32
     v_scale: torch.Tensor,  # float32
 ):
@@ -536,12 +536,12 @@ def triton_reshape_and_cache_flash_diffkv(
     assert (
         kv_cache_dtype == "auto"
         or is_quantized_kv_cache(kv_cache_dtype)
-        or kv_cache_dtype == "half"
+        or kv_cache_dtype == "float16"
     ), f"unsupported kv_cache_dtype (str), got {kv_cache_dtype}."
 
     if is_quantized_kv_cache(kv_cache_dtype):
         kv_cache_torch_dtype = current_platform.fp8_dtype()
-    elif kv_cache_dtype == "half":
+    elif kv_cache_dtype == "float16":
         kv_cache_torch_dtype = torch.float16
     else:
         kv_cache_torch_dtype = kv_cache.dtype

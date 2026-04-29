@@ -2,112 +2,123 @@
 set -e
 
 # Settings
-# NB: run this script from this branch with: chmod +x ./build_and_push_docker.sh && docker login -u aiinfos && ./build_and_push_docker.sh 
-# it will default to current branch name: v0.19.1rc0.x or from another branch: e.g. "./build_and_push_docker.sh v0.17.1rc0.x"
+# NB: run this script from this branch with:
+# chmod +x ./build_and_push_docker.sh && docker login -u aiinfos && ./build_and_push_docker.sh 
+# it will default to current branch name: v0.20.1rc0.x or from another branch: e.g. "./build_and_push_docker.sh v0.17.1rc0.x"
+# NB2: you can force ROCM/PyTorch versions with: 
+# sudo ./build_and_push_docker.sh v0.20.1rc0.x 7.2.1 2.11.0
 IMAGE_NAME="aiinfos/vllm-gfx906-mobydick"
-IMAGE_TAG="${1:-v0.19.1rc0.x}"
+IMAGE_TAG="${1:-v0.20.1rc0.x}"
+ROCM_VERSION="${2:-6.3.3}"
+PYTORCH_VERSION="${3:-2.11.0}"
+TRANSFORMERS_VERSION="5.7.0"
 
+# Determine amdsmi package version based on ROCm version
+if [[ $ROCM_VERSION == 7* ]]; then
+    AMDSMI_PKG="amdsmi==7.0.2"
+else
+    # Default for ROCm 6.x
+    AMDSMI_PKG="amdsmi>=6.3,<6.4"
+fi
+
+BASE_IMAGE="docker.io/mixa3607/pytorch-gfx906:v${PYTORCH_VERSION}-rocm-${ROCM_VERSION}"
+
+echo "Using base image: ${BASE_IMAGE}"
 echo "Creating Dockerfile..."
 
-cat << 'EOF' > Dockerfile
-FROM rocm/pytorch:rocm6.3.4_ubuntu24.04_py3.12_pytorch_release_2.4.0
-
-# Avoid tzdata interactive prompts
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Update system and install required build dependencies
-RUN apt-get update && apt-get install -y \
-    wget \
-    curl \
-    git \
-    sudo \
-    build-essential \
-    ffmpeg \
-    ninja-build \
-    && rm -rf /var/lib/apt/lists/*
-
-# The base image has an incompatible version of PyTorch, TorchVision and Triton for gfx906.
-# We uninstall them before rebuilding our own for gfx906.
-RUN pip uninstall -y torch torchvision torchaudio triton
+cat << EOF > Dockerfile
+# syntax=docker/dockerfile:1.4
+FROM ${BASE_IMAGE} AS rocm_base
 
 # Global environment variables
+ENV DEBIAN_FRONTEND=noninteractive
 ENV USE_ROCM=1
 ENV PYTORCH_ROCM_ARCH=gfx906
 
-WORKDIR /workspace
+# Fix 'Cannot uninstall PyJWT, RECORD file not found' caused by Debian system packages
+RUN pip install --upgrade --ignore-installed pyjwt
 
-# Install PyTorch 2.10.0 from source targeting gfx906
-RUN git clone --branch v2.10.0 --recursive https://github.com/pytorch/pytorch.git && \
-    cd pytorch && \
-    pip install -r requirements.txt && \
-    pip install mkl-static mkl-include && \
-    python tools/amd_build/build_amd.py && \
-    MAX_JOBS=$(nproc) pip wheel --no-build-isolation -v -w dist -e . && \
-    pip install ./dist/torch*.whl && \
-    cd .. && \
-    rm -rf pytorch
+# Install amdsmi early (often needed for vLLM)
+RUN pip install "${AMDSMI_PKG}"
 
-# Install Torchvision 0.25.0
-RUN git clone --branch v0.25.0 https://github.com/pytorch/vision.git && \
-    cd vision && \
-    FORCE_CUDA=1 python setup.py install && \
-    cd .. && \
-    rm -rf vision
+# ==========================================
+# Build stage: Install build dependencies
+# ==========================================
+FROM rocm_base AS build_base
 
-# Install Torchaudio 2.10.0
-RUN git clone --branch v2.10.0 https://github.com/pytorch/audio.git && \
-    cd audio && \
-    python setup.py install && \
-    cd .. && \
-    rm -rf audio
+# Install necessary build tools
+RUN apt-get update && apt-get install -y \\
+    git \\
+    wget \\
+    curl \\
+    cmake \\
+    ninja-build \\
+    build-essential \\
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Triton-gfx906 3.6.0
-RUN git clone --branch v3.6.0+gfx906 https://github.com/ai-infos/triton-gfx906.git && \
-    cd triton-gfx906 && \
-    pip install -r python/requirements.txt && \
-    TRITON_CODEGEN_BACKENDS="amd" pip wheel --no-build-isolation -w dist . && \
-    pip install ./dist/triton-*.whl && \
-    cd .. && \
-    rm -rf triton-gfx906
+RUN pip install ninja 'cmake>=3.26.1,<4' pybind11 packaging 'setuptools>=77.0.3,<80.0.0' 'setuptools-scm>=8' wheel
 
-# Install Flash-Attention for gfx906
-RUN git clone https://github.com/ai-infos/flash-attention-gfx906.git && \
-    cd flash-attention-gfx906 && \
-    FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE" python setup.py install && \
-    cd .. && \
-    rm -rf flash-attention-gfx906
+# ==========================================
+# Build Triton-gfx906
+# ==========================================
+FROM build_base AS build_triton
+WORKDIR /app
+RUN git clone --branch v3.6.0+gfx906 https://github.com/ai-infos/triton-gfx906.git triton-gfx906 && \\
+    cd triton-gfx906 && \\
+    pip install -r python/requirements.txt && \\
+    TRITON_CODEGEN_BACKENDS="amd" pip wheel --no-build-isolation -w /dist .
 
-# Install vLLM-gfx906-mobydick
-RUN git clone https://github.com/ai-infos/vllm-gfx906-mobydick.git && \
-    cd vllm-gfx906-mobydick && \
-    pip install 'cmake>=3.26.1,<4' 'packaging>=24.2' 'setuptools>=77.0.3,<80.0.0' 'setuptools-scm>=8' 'jinja2>=3.1.6' 'amdsmi>=6.3,<6.4' 'timm>=1.0.17' && \
-    pip install -r requirements/rocm.txt && \
-    pip wheel --no-build-isolation -v -w dist . && \
-    pip install ./dist/vllm-*.whl && \
-    pip install transformers==5.5.0 "numpy<2"
+# ==========================================
+# Build Flash-Attention-gfx906
+# ==========================================
+FROM build_base AS build_flash_attn
+WORKDIR /app
+RUN git clone https://github.com/ai-infos/flash-attention-gfx906.git flash-attention-gfx906 && \\
+    cd flash-attention-gfx906 && \\
+    FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE" pip wheel --no-build-isolation -w /dist .
 
-# Ensure user remains in the repo directory during interactive shells
+# ==========================================
+# Build vLLM-gfx906-mobydick
+# ==========================================
+FROM build_base AS build_vllm
+WORKDIR /app
+RUN git clone https://github.com/ai-infos/vllm-gfx906-mobydick.git vllm-gfx906-mobydick && \\
+    cd vllm-gfx906-mobydick && \\
+    pip install -r requirements/rocm.txt && \\
+    pip wheel --no-build-isolation -v -w /dist .
+
+# ==========================================
+# Final minimal image
+# ==========================================
+FROM rocm_base AS final
 WORKDIR /workspace/vllm-gfx906-mobydick
 
 # Set recommended runtime environment variables
 ENV FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
 ENV VLLM_LOGGING_LEVEL=INFO
 
+# Bind mount the wheels directly and install them without bloating the layer
+# Install everything in a single pip command so pip resolves them together and doesn't fetch CUDA versions
+RUN --mount=type=bind,from=build_triton,src=/dist/,target=/dist_triton \\
+    --mount=type=bind,from=build_flash_attn,src=/dist/,target=/dist_flash_attn \\
+    --mount=type=bind,from=build_vllm,src=/dist/,target=/dist_vllm \\
+    pip install transformers=="${TRANSFORMERS_VERSION}" /dist_triton/triton-*.whl /dist_flash_attn/flash_attn-*.whl /dist_vllm/vllm-*.whl
+
 CMD ["/bin/bash"]
 EOF
 
 echo "Dockerfile has been created."
 
-echo "Building the Docker image: ${IMAGE_NAME}:${IMAGE_TAG} ..."
-# Provide robust error tracking and multi-platform compatibility
-docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest .
+echo "Building the Docker image: ${IMAGE_NAME}:${IMAGE_TAG}-rocm${ROCM_VERSION}-pytorch${PYTORCH_VERSION} ..."
+# Build the multi-stage image. Buildkit handles parallel stage execution.
+DOCKER_BUILDKIT=1 docker build -t ${IMAGE_NAME}:${IMAGE_TAG}-rocm${ROCM_VERSION}-pytorch${PYTORCH_VERSION} -t ${IMAGE_NAME}:latest .
 
 echo "We need to authenticate with Docker Hub before pushing."
 echo "If you haven't logged in yet, it will prompt for your Docker Hub credentials."
 docker login -u aiinfos
 
-echo "Pushing the Docker image to Docker Hub at ${IMAGE_NAME}:${IMAGE_TAG} and ${IMAGE_NAME}:latest ..."
-docker push ${IMAGE_NAME}:${IMAGE_TAG}
+echo "Pushing the Docker image to Docker Hub at ${IMAGE_NAME}:${IMAGE_TAG}-rocm${ROCM_VERSION}-pytorch${PYTORCH_VERSION} and ${IMAGE_NAME}:latest ..."
+docker push ${IMAGE_NAME}:${IMAGE_TAG}-rocm${ROCM_VERSION}-pytorch${PYTORCH_VERSION}
 docker push ${IMAGE_NAME}:latest
 
 echo "Process completed successfully! The images are pushed to Docker Hub."

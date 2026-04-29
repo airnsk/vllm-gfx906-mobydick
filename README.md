@@ -8,8 +8,11 @@ If you have Docker and the AMD ROCm drivers/kernel modules installed on your hos
 # Pull the latest image (or specify a tag instead of latest, e.g. v0.19.1rc0.x)
 docker pull aiinfos/vllm-gfx906-mobydick:latest
 
-# Run the container interactively (Make sure to pass ROCm devices into the container and have your models in host ~/llm/models)
-docker run -it --name vllm-gfx906-mobydick -v ~/llm/models:/models --network host --device=/dev/kfd --device=/dev/dri --group-add video --group-add $(getent group render | cut -d: -f3) --ipc=host aiinfos/vllm-gfx906-mobydick:latest
+# Run the container interactively (Make sure to pass ROCm devices into the container and have your models in host /home/ as we map /home:/home; feel free to edit the command below to a safer one, without priviledged and others)
+sudo docker run -it --name vllm-gfx906-mobydick -v /home:/home --network host --device=/dev/kfd --device=/dev/dri \
+  --group-add video --group-add $(getent group render | cut -d: -f3) \
+  --cap-add=SYS_ADMIN --volume /sys:/sys:ro --pid=host --privileged \
+  --ipc=host aiinfos/vllm-gfx906-mobydick:latest
 ```
 
 Once inside the container, you are all set! You can immediately start serving models (see the Quickstart example below).
@@ -56,9 +59,9 @@ pyenv install 3.12.11
 pyenv virtualenv 3.12.11 venv312
 pyenv activate venv312
 
-# PYTORCH 2.10.0
+# PYTORCH 2.11.0
 
-git clone --branch v2.10.0 --recursive https://github.com/pytorch/pytorch.git
+git clone --branch v2.11.0 --recursive https://github.com/pytorch/pytorch.git
 cd pytorch
 
 # Install Python Dependencies
@@ -78,13 +81,13 @@ pip wheel --no-build-isolation -v -w dist -e . 2>&1 | tee build.log
 pip install ./dist/torch*.whl
 
 
-# TORCHVISION 0.25.0
+# TORCHVISION 0.26.0
 
 # Install dependencies
 sudo apt-get update && sudo apt-get install -y libpng-dev libjpeg-dev ffmpeg
 
 # Build and Install
-git clone --branch v0.25.0 https://github.com/pytorch/vision.git
+git clone --branch v0.26.0 https://github.com/pytorch/vision.git
 cd vision
 export FORCE_CUDA=1
 export USE_ROCM=1
@@ -93,10 +96,10 @@ export PYTORCH_ROCM_ARCH=gfx906
 python setup.py install
 
 
-# TORCHAUDIO 2.10.0
+# TORCHAUDIO 2.11.0
 
 # Build and Install
-git clone --branch v2.10.0 https://github.com/pytorch/audio.git
+git clone --branch v2.11.0 https://github.com/pytorch/audio.git
 cd audio
 export PYTORCH_ROCM_ARCH=gfx906
 export USE_ROCM=1
@@ -123,20 +126,21 @@ FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE" python setup.py install
 
 git clone https://github.com/ai-infos/vllm-gfx906-mobydick.git
 cd vllm-gfx906-mobydick
-pip install 'cmake>=3.26.1,<4' 'packaging>=24.2' 'setuptools>=77.0.3,<80.0.0' 'setuptools-scm>=8' 'jinja2>=3.1.6' 'amdsmi>=6.3,<6.4' 'timm>=1.0.17'
+pip install 'amdsmi>=6.3,<6.4'
 pip install -r requirements/rocm.txt
 pip wheel --no-build-isolation -v -w dist . 2>&1 | tee build.log
 pip install ./dist/vllm-*.whl
 
-# TRANSFORMERS (v5.5.0 or any other version <6 supporting your model) and NUMPY (v<2)
-pip install transformers==5.5.0 "numpy<2"
+# TRANSFORMERS (v5.7.0 or any other version <6 supporting your model)
+pip install transformers==5.7.0
 ```
 
-### Quickstart example (with Qwen3 0.6B)
+### Quickstart example (with Qwen3.5-0.8B)
 
 ```code
-FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE VLLM_LOGGING_LEVEL=DEBUG vllm serve \
+FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE VLLM_LOGGING_LEVEL=DEBUG vllm serve Qwen/Qwen3.5-0.8B \
   --dtype float16 \
+  --kv-cache-dtype float16 \
   2>&1 | tee log.txt
 ```
 

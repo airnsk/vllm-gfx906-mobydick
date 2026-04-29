@@ -242,7 +242,6 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
     kNvfp4Dynamic,
 )
 from vllm.platforms import current_platform
-#from vllm.platforms.rocm import on_gfx906
 from vllm.utils.flashinfer import has_flashinfer, has_nvidia_artifactory
 from vllm.utils.math_utils import cdiv, round_down
 from vllm.utils.torch_utils import (
@@ -381,7 +380,7 @@ class MLAAttention(nn.Module, AttentionLayerBase):
         self.calculate_kv_scales = calculate_kv_scales
         _init_kv_cache_quant(self, quant_config, prefix)
 
-        _KV_DTYPE_MAP = {"half": torch.float16, "bfloat16": torch.bfloat16}
+        _KV_DTYPE_MAP = {"float16": torch.float16, "bfloat16": torch.bfloat16}
         self.kv_16bits_dtype = _KV_DTYPE_MAP.get(self.kv_cache_dtype)
         self.is_16bits_casting_enabled = False
 
